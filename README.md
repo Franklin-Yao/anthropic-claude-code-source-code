@@ -1,5 +1,13 @@
 # Claude Code — Source Code
 
+The code is from https://x.com/Fried_rice/status/2038894956459290963. 
+# History
+At 7am on March 31, 2026, I woke up and opened my phone. I saw this news that claude code leaked their code. This is so exciting as every developer want to know how it works because it is a masterpiece of agent harness engineering.
+
+Let's Study it and create a better version out of it.
+
+# Codebase Explanation
+
 Claude Code is Anthropic's official CLI for Claude. It is an interactive AI coding assistant that runs in your terminal, capable of reading and editing files, running shell commands, searching the web, managing tasks, spawning sub-agents, and integrating with external tools through the Model Context Protocol (MCP).
 
 ---
