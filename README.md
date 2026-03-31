@@ -9,7 +9,6 @@ Let's Study it and create a better version out of it. Please join our discord: h
 ## Sources & mirrors
 
 - Original thread: [Fried_rice on X](https://x.com/Fried_rice/status/2038894956459290963).
-- Community mirror with a long-form write-up of the leak and internals: **[Kuberwastaken/claude-code](https://github.com/Kuberwastaken/claude-code)** on GitHub (backup in case the repo is taken down; fork/archiving welcome).
 - Same story with nicer reading UX on the author’s blog: [Claude Code’s source via npm sourcemaps](https://kuber.studio/blog/AI/Claude-Code%27s-Entire-Source-Code-Got-Leaked-via-a-Sourcemap-in-npm%2C-Let%27s-Talk-About-it) (kuber.studio).
 
 # Codebase Explanation
