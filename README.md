@@ -6,6 +6,12 @@ At 7am on March 31, 2026, I woke up and opened my phone. I saw this news that cl
 
 Let's Study it and create a better version out of it. Please join our discord: https://discord.gg/BwcjABYwEe
 
+## Sources & mirrors
+
+- Original thread: [Fried_rice on X](https://x.com/Fried_rice/status/2038894956459290963).
+- Community mirror with a long-form write-up of the leak and internals: **[Kuberwastaken/claude-code](https://github.com/Kuberwastaken/claude-code)** on GitHub (backup in case the repo is taken down; fork/archiving welcome).
+- Same story with nicer reading UX on the author’s blog: [Claude Code’s source via npm sourcemaps](https://kuber.studio/blog/AI/Claude-Code%27s-Entire-Source-Code-Got-Leaked-via-a-Sourcemap-in-npm%2C-Let%27s-Talk-About-it) (kuber.studio).
+
 # Codebase Explanation
 
 Claude Code is Anthropic's official CLI for Claude. It is an interactive AI coding assistant that runs in your terminal, capable of reading and editing files, running shell commands, searching the web, managing tasks, spawning sub-agents, and integrating with external tools through the Model Context Protocol (MCP).
@@ -38,6 +44,7 @@ Claude Code is Anthropic's official CLI for Claude. It is an interactive AI codi
 - [Feature Flags (Build-time)](#feature-flags-build-time)
 - [Session & History Management](#session--history-management)
 - [Remote & Bridge Modes](#remote--bridge-modes)
+- [Appendix: Leak context & internal highlights](#appendix-leak-context--internal-highlights)
 
 ---
 
@@ -597,3 +604,135 @@ Commands:
 **Remote mode** (`remote/`, `CLAUDE_CODE_REMOTE=1`) runs Claude Code inside CCR (Claude Code Remote) infrastructure. Remote-safe command filtering ensures only approved operations run in multi-tenant environments.
 
 **Worktree isolation** (`tools/EnterWorktreeTool/`) creates a temporary git worktree so agent changes are isolated from the main branch until explicitly merged. The worktree is automatically cleaned up if no changes are made.
+
+---
+
+## Appendix: Leak context & internal highlights
+
+The following expands on themes discussed in the **[Kuberwastaken/claude-code](https://github.com/Kuberwastaken/claude-code)** mirror README and blog. It is narrative context around the codebase above, not a second architecture spec.
+
+### How the source appeared on npm
+
+Production JS bundles often ship with **source maps** (`.map`). Those files map minified code back to originals and typically embed **`sourcesContent`** — literal copies of source files. If maps are published (e.g. not listed in `.npmignore`), anyone unpacking the tarball can recover the tree. Claude Code is built with **Bun**, which generates source maps unless disabled — so a forgotten map in the published package is enough to leak the full TypeScript. This class of mistake is common; the mirror README frames it as a process failure alongside “Undercover Mode” and other safeguards that don’t apply to build artifacts.
+
+### Buddy — terminal companion (gated)
+
+Under compile-time flags such as **`BUDDY`**, `buddy/` implements a **Tamagotchi-style** companion with full gacha mechanics:
+
+- **PRNG** — Mulberry32 seeded from a hash of the user ID with a rotating salt (e.g. `friend-2026-401`), making rolls deterministic per user per period.
+- **18 species** across five rarity tiers — Common, Uncommon, Rare, Epic, and Legendary — plus an optional “shiny” roll.
+- **Procedural stats** — each pet has five attributes: Debugging, Patience, Chaos, Wisdom, and Snark, generated from the PRNG seed.
+- **AI-generated personality** — on first hatch, a short personality description is written by the model and stored alongside the sprite.
+- **ASCII sprites** — rendered beside the prompt in the Ink UI so the pet is visible during sessions.
+- **Framing** — copy positions the pet as a separate entity watching alongside the model, not as the model itself.
+
+Teaser windows and launch timing referenced in the mirror are product schedule hints from the leak, not guarantees.
+
+### KAIROS — “always-on” assistant (gated)
+
+**`PROACTIVE` / `KAIROS`** gate an **`assistant/`** mode that turns Claude Code into a persistent background observer:
+
+- Runs on a **tick interval**, scanning for things to act on without being explicitly prompted.
+- Uses **append-only daily logs** so the assistant's observations accumulate without overwriting history.
+- Enforces a **~15-second blocking budget** — proactive work must finish quickly enough that it never stalls the user's foreground session.
+- **Brief** output style is tuned for low-noise, always-visible assistance.
+- Exclusive tools available only in KAIROS mode (not in the standard tool list):
+  - `SendUserFile` — push a file to the user outside the normal REPL flow
+  - `PushNotification` — send a system notification to the user
+  - `SubscribePR` — watch a pull request and act on new activity
+
+### ULTRAPLAN — long remote planning
+
+**ULTRAPLAN** offloads heavy planning work to a dedicated remote session:
+
+- Spawns a **remote CCR** session running **Claude Opus 4.6** (the strongest available model) for up to ~30 minutes.
+- The local session **polls** the remote on an interval rather than blocking.
+- When the plan is ready, a **browser-based approval workflow** lets the user review and approve before anything is applied locally.
+- A sentinel string **`__ULTRAPLAN_TELEPORT_LOCAL__`** signals the remote session to "teleport" the approved plan back into the local terminal session.
+- Designed for tasks too large or expensive to plan inline — architecture decisions, large refactors, multi-repo changes.
+
+### “Dream” — `autoDream` memory consolidation
+
+**`services/autoDream/`** implements background **memory consolidation** that runs as a subagent after sessions:
+
+**Three-gate trigger** — all three must pass before a consolidation run starts:
+1. **Time gate** — at least 24 hours since the last consolidation run
+2. **Session minimum** — at least 5 sessions accumulated since the last run
+3. **Lock check** — no other consolidation run is currently in progress (prevents overlap)
+
+**Four consolidation phases:**
+1. **Orient** — review existing memories and understand the current state
+2. **Gather Signal** — collect observations from recent session logs (read-only; no mutations)
+3. **Consolidate** — synthesize new persistent memories from what was gathered
+4. **Prune & Index** — remove stale or redundant memories, rebuild the index
+
+The gather/orient phases use **read-only tooling** intentionally, so the consolidation pass cannot mutate the project arbitrarily while reflecting on it.
+
+### Undercover mode
+
+**`utils/undercover.ts`** (conceptually) activates on **public/open-source** repos for Anthropic-internal users so commit/PR text avoids internal codenames, unreleased model IDs, and obvious “Claude Code” fingerprints unless the remote matches an internal allowlist. **`CLAUDE_CODE_UNDERCOVER=1`** can force the behavior. Internal **`USER_TYPE === 'ant'`** gates staging APIs and other internal-only paths in the leak narrative.
+
+### Coordinator & swarms
+
+**`COORDINATOR_MODE`** and **`coordinator/`** implement multi-phase multi-agent workflows:
+
+- **Phase pipeline** — research → synthesis → implementation → verification, with a coordinator agent managing hand-offs between phases.
+- **Parallel workers** — multiple agents run simultaneously on decomposed subtasks; the coordinator aggregates their outputs.
+- **Shared scratchpad directories** — worker agents write intermediate findings to a shared temp directory so later phases can read prior work without re-invoking agents.
+- **Async XML notifications** — agents communicate task-completion events using structured XML markers the coordinator parses to know when to advance phases.
+- **Team/swarm concepts** — agents can be named and grouped into a “team”; the coordinator assigns color coding per agent for visual distinction in the terminal.
+- **Anti-laziness prompt engineering** — the coordinator system prompt contains explicit instructions such as “read the actual findings” to prevent agents from summarizing without grounding claims in real tool outputs.
+
+### “Penguin mode” (Fast mode)
+
+The mirror notes internal naming: **Fast mode** ties to endpoints and analytics keyed with **penguin** (e.g. `claude_code_penguin_mode`, `penguinModeOrgEnabled`, `tengu_penguins_off`). This is naming/telemetry surfacing from the leak, not user-facing documentation.
+
+### System prompt & safeguards
+
+Prompts are composed from **cached static** vs **dynamic** sections with markers like **`SYSTEM_PROMPT_DYNAMIC_BOUNDARY`**; volatile bits may go through paths such as **`DANGEROUS_uncachedSystemPromptSection()`**. **`CYBER_RISK_INSTRUCTION`** and related copy are called out in the mirror as owned by Safeguards and requiring review before edits.
+
+### Permissions (summary)
+
+Beyond allow/deny, the permission system has several layers:
+
+- **Risk classification** — every tool call is classified as `LOW`, `MEDIUM`, or `HIGH` risk before execution.
+- **ML-based YOLO classifier** — an ML model that auto-approves `LOW`-risk tool calls without prompting the user, even in default (non-bypass) mode. The classifier is trained on user approval history.
+- **Modes** — default / auto / bypass / yolo, each progressively reducing how many approvals are shown.
+- **Protected paths** — certain file paths (e.g. `.git/`, credential files) are hard-blocked regardless of mode.
+- **Traversal defenses** — path normalization prevents `../` escapes out of allowed directories.
+- **Permission explainer** — when the user is asked to approve a tool call, an optional “explainer” call generates a short natural-language description of what the tool will do and why it might be risky.
+- **Safeguards team ownership** — `CYBER_RISK_INSTRUCTION` and related security boundaries in `constants/prompts.ts` are flagged in the codebase as owned by the Safeguards team (David Forsythe, Kyla Guru) and require review before editing.
+
+### Beta headers (examples)
+
+Constants such as **`constants/betas.ts`** negotiate API capabilities (extended thinking, large context, web search, structured outputs, effort, task budgets, fast mode, redacted thinking, token-efficient tools, AFK, internal CLI betas, advisor tooling, etc.). **Exact strings and availability depend on API and account**; treat the leak as a snapshot.
+
+### Internal model codenames
+
+The leak surfaced several internal codenames used in feature flags, analytics events, and API paths:
+
+| Codename | Meaning |
+|----------|---------|
+| **Tengu** | The internal project codename for Claude Code itself. Hundreds of feature flag keys are prefixed `tengu_*`. |
+| **Fennec** | Internal codename for Opus-class models. |
+| **Capybara** | Another model-family codename referenced in undercover mode suppression. |
+| **Penguin** | Internal name for Fast mode (see above). API endpoint: `/api/claude_code_penguin_mode`. |
+
+These codenames appear in telemetry keys, `bun:bundle` feature flag names, and undercover-mode suppression lists. They are **internal naming**, not user-facing and subject to change.
+
+### Feature gating recap
+
+**`feature()` from `bun:bundle`** drives dead-code elimination; **GrowthBook** and `tengu_*` keys handle runtime gates. Internal-only surfaces (e.g. certain commands and tools) often combine **`USER_TYPE === 'ant'`** with build flags — external npm builds won’t ship the same graph even when source exists in the tree.
+
+### Other tidbits from the mirror
+
+- **Upstream proxy** (`upstreamproxy/`): container-oriented relay, hardened process behavior, session token paths in CCR, selective allowlists for domains.
+- **Bridge**: JWT-oriented integration with **claude.ai**; work modes like single-session / worktree / same-dir.
+- **Migrations**: internal model nickname history (e.g. **Fennec** → Opus paths, Sonnet generations).
+- **Billing / client headers**: requests may carry **`x-anthropic-billing-header`** with version/fingerprint/entrypoint/workload; **native client attestation** can replace placeholders when enabled.
+- **Computer use (“Chicago”)**: MCP-oriented computer-use stack, subscription-gated in product; **`@ant/*`** packages in source may not be public.
+- **Pricing**: **`utils/modelCost.ts`** aligns with public pricing in the mirror’s review.
+
+### Ethics & use
+
+This repository is **source recovered from a packaging mistake**, not an official release. Prefer **Anthropic’s supported install** ([`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)) for running the product; use this tree for **study and security research** under applicable law and terms of service.
